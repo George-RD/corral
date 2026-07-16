@@ -51,12 +51,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 async function runCommand(command: string, args: string[], cwd?: string): Promise<CommandResult> {
-	const result = await $`${command} ${args}`.quiet().nothrow().cwd(cwd ?? sessionCwd);
-	return {
-		exitCode: result.exitCode,
-		stdout: result.stdout.toString(),
-		stderr: result.stderr.toString(),
-	};
+	try {
+		const result = await $`${command} ${args}`.quiet().nothrow().cwd(cwd ?? sessionCwd);
+		return {
+			exitCode: result.exitCode,
+			stdout: result.stdout.toString(),
+			stderr: result.stderr.toString(),
+		};
+	} catch (error) {
+		return { exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+	}
 }
 
 async function runHerdr(args: string[], cwd?: string): Promise<CommandResult> {
