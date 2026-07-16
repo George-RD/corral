@@ -37,7 +37,7 @@ The installer creates a symlink, so edits to this checkout are immediately avail
 The foreman can call these LLM tools:
 
 - `corral_spawn({ name?, task, base_branch? })` creates `<repo>/.corral/worktrees/<name>` on `corral/<name>`, opens a labeled herdr workspace/pane, launches bare `codex`, waits for its idle handshake, then sends the task.
-- `corral_send({ name, message })` waits for the hand to be idle or done and sends another instruction. After dispatch, the hand is marked pending: stale `idle` or `done` readings do not count until `working` or `blocked` is observed; a hand that never visibly starts returns a non-success warning to check its pane, and `blocked` is surfaced as needing input.
+- `corral_send({ name, message })` waits for the hand to be idle, done, or blocked, then sends another instruction. A blocked hand is waiting for an input reply. After dispatch, the hand is marked pending: stale `idle` or `done` readings do not count until `working` or `blocked` is observed; a hand that never visibly starts returns a non-success warning to check its pane.
 - `corral_wait({ name?, timeout_s? })` waits for one hand or all hands to become idle/done. For a newly dispatched task, `idle` and `done` remain ambiguous until the pane is observed `working` or `blocked`; the start grace period is capped by the overall timeout, and a never-started hand is reported distinctly instead of as completed.
 - `corral_read({ name, lines? })` reads recent pane output (with a visible-pane fallback for terminals where herdr has no recent-unwrapped buffer).
 - `corral_list({})` returns each hand's pane, branch, worktree, and herdr status.

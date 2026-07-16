@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { waitForCompletion } from "./corral";
+import { canDispatch, waitForCompletion, type CompletionResult } from "./corral";
+
+function completion(overrides: Partial<CompletionResult>): CompletionResult {
+	return { timedOut: false, started: true, completed: false, blocked: false, ...overrides };
+}
+
 
 function scriptedStatus(statuses: string[]): { read: () => Promise<string | undefined>; calls: () => number } {
 	let index = 0;
@@ -62,11 +67,39 @@ describe("dispatch-aware completion waiting", () => {
 		expect(statuses.calls()).toBe(1);
 	});
 
-	it("surfaces blocked hands distinctly", async () => {
+	it("allows a blocked hand to receive its input reply", async () => {
 		const statuses = scriptedStatus(["blocked"]);
 		const result = await waitForCompletion(statuses.read, { ...fastOptions, dispatchPending: true });
 
 		expect(result).toMatchObject({ status: "blocked", timedOut: false, started: true, blocked: true, completed: false });
 		expect(result.error).toContain("blocked");
+		expect(canDispatch(result)).toEqual({ ok: true });
+	});
+
+	it("allows a completed hand to receive another instruction", () => {
+		expect(canDispatch(completion({ status: "done", completed: true }))).toEqual({ ok: true });
+	});
+
+	it("rejects a never-started dispatch with its reason", () => {
+		const result = completion({
+			status: "idle",
+			timedOut: true,
+			started: false,
+			error: "hand never observably started",
+		});
+
+		expect(canDispatch(result)).toEqual({ ok: false, reason: "hand never observably started" });
+	});
+
+	it("rejects a result marked never-started even without timeout", () => {
+		const result = completion({ started: false, error: "hand never started" });
+
+		expect(canDispatch(result)).toEqual({ ok: false, reason: "hand never started" });
+	});
+
+	it("rejects a plain timeout with its reason", () => {
+		const result = completion({ status: "working", timedOut: true, error: "timed out waiting for hand completion" });
+
+		expect(canDispatch(result)).toEqual({ ok: false, reason: "timed out waiting for hand completion" });
 	});
 });

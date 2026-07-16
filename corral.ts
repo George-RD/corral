@@ -25,6 +25,16 @@ export type CompletionResult = {
 	error?: string;
 };
 
+export function canDispatch(result: CompletionResult): { ok: boolean; reason?: string } {
+	if (result.timedOut) {
+		return { ok: false, reason: result.error ?? "timed out waiting for hand completion" };
+	}
+	if (!result.started) {
+		return { ok: false, reason: result.error ?? "hand never observably started" };
+	}
+	return { ok: true };
+}
+
 export type CompletionWaitOptions = {
 	timeoutMs: number;
 	dispatchPending?: boolean;
@@ -321,8 +331,11 @@ export default function corralExtension(pi: ExtensionAPI) {
 			const hand = hands.get(params.name);
 			if (!hand) return errorResult(`unknown hand: ${params.name}`);
 			const ready = await waitForHand(hand, DEFAULT_TIMEOUT_MS, pi);
-			if (ready.blocked) return errorResult(`hand ${hand.name}: ${ready.error ?? "hand is blocked and needs input"} (status: blocked)`);
-			if (ready.timedOut) return errorResult(`hand ${hand.name}: ${ready.error ?? "timed out waiting for completion"} (status: ${ready.status ?? "unknown"})`);
+			const readiness = canDispatch(ready);
+			if (!readiness.ok) {
+				return errorResult(`hand ${hand.name}: ${readiness.reason ?? "hand is not ready for dispatch"} (status: ${ready.status ?? "unknown"})`);
+			}
+
 			const sent = await runHerdr(["pane", "run", hand.paneId, params.message], hand.worktree);
 			if (sent.exitCode !== 0) return errorResult(`could not send message: ${commandError(sent, "herdr pane run failed")}`);
 			hand.dispatchPending = true;
