@@ -15,5 +15,5 @@
 		"forceConsistentCasingInFileNames": true,
 		"types": ["bun-types"]
 	},
-	"include": ["corral.ts", "scripts"]
+	"include": ["corral.ts", "corral.test.ts", "scripts"]
 }

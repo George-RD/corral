@@ -10,13 +10,35 @@ type HandState = {
 	worktree: string;
 	branch: string;
 	task?: string;
+	dispatchPending?: boolean;
 };
 
 type CommandResult = { exitCode: number; stdout: string; stderr: string };
 type PaneInfo = { pane?: { agent_status?: string; [key: string]: unknown }; [key: string]: unknown };
 
+export type CompletionResult = {
+	status?: string;
+	timedOut: boolean;
+	started: boolean;
+	completed: boolean;
+	blocked: boolean;
+	error?: string;
+};
+
+export type CompletionWaitOptions = {
+	timeoutMs: number;
+	dispatchPending?: boolean;
+	pollIntervalMs?: number;
+	startGraceMs?: number;
+	onDispatchPendingChange?: (pending: boolean) => void | Promise<void>;
+};
+
+type StatusReader = () => Promise<string | undefined>;
+
 const STATE_TYPE = "corral-state";
 const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_START_GRACE_MS = 15_000;
+const DEFAULT_POLL_INTERVAL_MS = 250;
 
 const hands = new Map<string, HandState>();
 let sessionCwd = process.cwd();
@@ -99,15 +121,69 @@ async function waitForIdle(paneId: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
 	return runHerdr(["wait", "agent-status", paneId, "--status", "idle", "--timeout", String(timeoutMs)]);
 }
 
-async function waitForCompletion(paneId: string, timeoutMs: number): Promise<{ status?: string; timedOut: boolean }> {
-	const initial = await paneInfo(paneId);
-	const initialStatus = initial?.pane?.agent_status;
-	if (initialStatus === "idle" || initialStatus === "done") return { status: initialStatus, timedOut: false };
-	const waited = await runHerdr(["wait", "agent-status", paneId, "--status", "done", "--timeout", String(Math.max(0, timeoutMs))]);
-	const finalInfo = await paneInfo(paneId);
-	const status = finalInfo?.pane?.agent_status;
-	if (status === "idle" || status === "done") return { status, timedOut: false };
-	return { status, timedOut: waited.exitCode !== 0 || status !== "idle" };
+function completionOutcome(status: string | undefined, timedOut: boolean, started: boolean, completed: boolean, blocked = false, error?: string): CompletionResult {
+	return { status, timedOut, started, completed, blocked, ...(error ? { error } : {}) };
+}
+
+function sleep(ms: number): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, ms);
+	return promise;
+}
+
+export async function waitForCompletion(readStatus: StatusReader, options: CompletionWaitOptions): Promise<CompletionResult> {
+	let dispatchPending = options.dispatchPending === true;
+	const timeoutMs = Math.max(0, options.timeoutMs);
+	const startGraceMs = Math.min(Math.max(0, options.startGraceMs ?? DEFAULT_START_GRACE_MS), timeoutMs);
+	const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
+	const startedAt = Date.now();
+	const clearPending = async () => {
+		if (!dispatchPending) return;
+		dispatchPending = false;
+		await options.onDispatchPendingChange?.(false);
+	};
+
+	while (true) {
+		const status = await readStatus();
+		const elapsed = Date.now() - startedAt;
+
+		if (status === "working") {
+			await clearPending();
+		} else if (status === "blocked") {
+			await clearPending();
+			return completionOutcome(status, false, true, false, true, "hand is blocked and needs input");
+		}
+		if (!dispatchPending && (status === "idle" || status === "done")) {
+			return completionOutcome(status, false, true, true);
+		}
+		if (dispatchPending && elapsed >= startGraceMs) {
+			return completionOutcome(
+				status,
+				true,
+				false,
+				false,
+				false,
+				"hand never observably started; read the pane to check (a very fast task may have finished between polls)",
+			);
+		}
+		if (elapsed >= timeoutMs) {
+			return completionOutcome(status, true, !dispatchPending, false, false, "timed out waiting for hand completion");
+		}
+		await sleep(Math.min(pollIntervalMs, timeoutMs - elapsed));
+	}
+}
+function waitForHand(hand: HandState, timeoutMs: number, pi: ExtensionAPI): Promise<CompletionResult> {
+	return waitForCompletion(
+		async () => (await paneInfo(hand.paneId))?.pane?.agent_status,
+		{
+			timeoutMs,
+			dispatchPending: hand.dispatchPending === true,
+			onDispatchPendingChange: (pending) => {
+				hand.dispatchPending = pending;
+				persist(pi);
+			},
+		},
+	);
 }
 
 async function readPane(paneId: string, lines: number): Promise<string> {
@@ -127,11 +203,13 @@ function stateFromData(data: unknown): HandState[] {
 	if (!data || typeof data !== "object") return [];
 	const value = data as { hands?: unknown };
 	if (!Array.isArray(value.hands)) return [];
-	return value.hands.filter((hand): hand is HandState => {
-		if (!hand || typeof hand !== "object") return false;
-		const item = hand as Partial<HandState>;
-		return typeof item.name === "string" && typeof item.paneId === "string" && typeof item.worktree === "string" && typeof item.branch === "string";
-	});
+	return value.hands
+		.filter((hand): hand is HandState => {
+			if (!hand || typeof hand !== "object") return false;
+			const item = hand as Partial<HandState>;
+			return typeof item.name === "string" && typeof item.paneId === "string" && typeof item.worktree === "string" && typeof item.branch === "string";
+		})
+		.map((hand) => ({ ...hand, dispatchPending: hand.dispatchPending === true }));
 }
 async function repositoryRoot(cwd: string): Promise<string | undefined> {
 	const result = await runCommand("git", ["rev-parse", "--show-toplevel"], cwd);
@@ -224,6 +302,7 @@ export default function corralExtension(pi: ExtensionAPI) {
 				await cleanupCreatedPane(paneId, normalizedWorkspaceId, worktree, repoRoot);
 				return errorResult(`could not send task: ${commandError(sent, "herdr pane run failed")}`);
 			}
+			hand.dispatchPending = true;
 			hands.set(name, hand);
 			persist(pi);
 			return textResult(JSON.stringify({ name, pane_id: paneId, branch, worktree }, null, 2), { name, pane_id: paneId, branch, worktree });
@@ -241,10 +320,13 @@ export default function corralExtension(pi: ExtensionAPI) {
 			if (guard) return errorResult(guard);
 			const hand = hands.get(params.name);
 			if (!hand) return errorResult(`unknown hand: ${params.name}`);
-			const ready = await waitForCompletion(hand.paneId, DEFAULT_TIMEOUT_MS);
-			if (ready.timedOut) return errorResult(`hand ${hand.name} did not become idle or done (status: ${ready.status ?? "unknown"})`);
+			const ready = await waitForHand(hand, DEFAULT_TIMEOUT_MS, pi);
+			if (ready.blocked) return errorResult(`hand ${hand.name}: ${ready.error ?? "hand is blocked and needs input"} (status: blocked)`);
+			if (ready.timedOut) return errorResult(`hand ${hand.name}: ${ready.error ?? "timed out waiting for completion"} (status: ${ready.status ?? "unknown"})`);
 			const sent = await runHerdr(["pane", "run", hand.paneId, params.message], hand.worktree);
 			if (sent.exitCode !== 0) return errorResult(`could not send message: ${commandError(sent, "herdr pane run failed")}`);
+			hand.dispatchPending = true;
+			persist(pi);
 			return textResult(`Sent to ${hand.name}.`, { name: hand.name, pane_id: hand.paneId });
 		},
 	} satisfies ToolDefinition<typeof sendSchema, unknown>;
@@ -261,7 +343,12 @@ export default function corralExtension(pi: ExtensionAPI) {
 			const selected = params.name ? [hands.get(params.name)] : [...hands.values()];
 			if (params.name && !selected[0]) return errorResult(`unknown hand: ${params.name}`);
 			const timeoutMs = (params.timeout_s ?? 60) * 1000;
-			const results = await Promise.all(selected.map(async (hand) => ({ name: hand!.name, ...(await waitForCompletion(hand!.paneId, timeoutMs)) })));
+			const results = await Promise.all(selected.map(async (hand) => ({ name: hand!.name, ...(await waitForHand(hand!, timeoutMs, pi)) })));
+			const failed = results.filter((result) => result.timedOut || result.blocked);
+			if (failed.length > 0) {
+				const summary = failed.map((result) => `${result.name}: ${result.error ?? `status ${result.status ?? "unknown"}`}`).join("; ");
+				return textResult(`corral: ${summary}`, results, true);
+			}
 			return textResult(JSON.stringify(results, null, 2), results);
 		},
 	} satisfies ToolDefinition<typeof waitSchema, unknown>;
