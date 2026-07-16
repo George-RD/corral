@@ -37,7 +37,7 @@ Instead, run OMP in its normal mode. When the skill is installed, the foreman pr
 
 - OMP with extension support
 - `HERDR_ENV=1` (run OMP inside a herdr pane)
-- `herdr` in `PATH`
+- `herdr` in `PATH`, with `pane process-info` and Codex session metadata support (verified with Herdr 0.7.4)
 - `codex` in `PATH`, authenticated for interactive use
 - `git` in `PATH`, with the current directory inside a Git repository
 - Codex's herdr integration installed (`herdr integration install codex`)
@@ -46,9 +46,9 @@ Instead, run OMP in its normal mode. When the skill is installed, the foreman pr
 
 The foreman can call these LLM tools:
 
-- `corral_spawn({ name?, task, base_branch? })` creates `<repo>/.corral/worktrees/<name>` on `corral/<name>`, opens a labeled herdr workspace/pane, launches bare `codex`, waits for its idle handshake, then sends the task.
-- `corral_send({ name, message })` waits for the hand to be idle, done, or blocked, then sends another instruction. A blocked hand is waiting for an input reply. After dispatch, the hand is marked pending: stale `idle` or `done` readings do not count until `working` or `blocked` is observed; a hand that never visibly starts returns a non-success warning to check its pane.
-- `corral_wait({ name?, timeout_s? })` waits for one hand or all hands to become idle/done. For a newly dispatched task, `idle` and `done` remain ambiguous until the pane is observed `working` or `blocked`; the start grace period is capped by the overall timeout, and a never-started hand is reported distinctly instead of as completed.
+- `corral_spawn({ name?, task?, base_branch?, model?, bootstrap? })` creates `<repo>/.corral/worktrees/<name>` on `corral/<name>` and opens a labeled herdr workspace/pane. It waits for a new Codex session, a live Codex foreground process, and stable idle status before dispatching an optional task. Omitting `task` creates a warm, ready hand. `model` is passed to Codex at launch. `bootstrap` can check Codex auth, Git/GitHub auth, and required executables before launch.
+- `corral_send({ name, message, recovery? })` waits for tracked work to finish or become blocked, then sends another instruction. Unconfirmed delivery requires explicit `recovery: "retry"`; an exited Codex process requires `recovery: "restart"`. Corral never automatically replays uncertain work and never sends agent instructions to the fallback shell.
+- `corral_wait({ name?, timeout_s? })` waits for tracked dispatches. Completion is tied to a persisted dispatch id and requires an observed `working` or `blocked` transition. An untouched warm hand reports ready with `started:false/completed:false`; persistent idle after a send reports `start-unknown` rather than success.
 - `corral_read({ name, lines? })` reads recent pane output (with a visible-pane fallback for terminals where herdr has no recent-unwrapped buffer).
 - `corral_list({})` returns each hand's pane, branch, worktree, and herdr status.
 - `corral_kill({ name, remove_worktree? })` closes the pane; optionally removes the worktree while preserving its branch.
@@ -60,6 +60,22 @@ Example prompt to OMP:
 > Spawn a hand named api to implement the endpoint described in issue #42. Keep the work on its corral branch, then wait and read its result.
 
 Hands remain visible in herdr so a human can watch Codex work live. State snapshots are persisted in the OMP session as `corral-state` entries and restored on a later session start; panes that no longer exist are dropped.
+
+Bootstrap options are read-only and are not submitted as Codex tasks:
+
+```json
+{
+  "name": "api",
+  "model": "gpt-5.6-luna",
+  "bootstrap": {
+    "codex_auth": true,
+    "git_auth": "remote",
+    "tools": ["gh", "rg"]
+  }
+}
+```
+
+`git_auth: "remote"` performs a non-interactive `git ls-remote origin HEAD`; `git_auth: "github"` uses `gh auth status`. Tool checks verify presence in `PATH` without executing arbitrary commands.
 
 ## Development
 
