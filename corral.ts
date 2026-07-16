@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { $ } from "bun";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,15 +14,9 @@ type HandState = {
 
 type CommandResult = { exitCode: number; stdout: string; stderr: string };
 type PaneInfo = { pane?: { agent_status?: string; [key: string]: unknown }; [key: string]: unknown };
-type SpawnParams = { name?: string; task: string; base_branch?: string };
-type SendParams = { name: string; message: string };
-type WaitParams = { name?: string; timeout_s?: number };
-type ReadParams = { name: string; lines?: number };
-type KillParams = { name: string; remove_worktree?: boolean };
 
 const STATE_TYPE = "corral-state";
 const DEFAULT_TIMEOUT_MS = 60_000;
-const POLL_MS = 250;
 
 const hands = new Map<string, HandState>();
 let sessionCwd = process.cwd();
@@ -158,7 +152,16 @@ async function cleanupCreatedPane(paneId: string, workspaceId: string | undefine
 export default function corralExtension(pi: ExtensionAPI) {
 	pi.setLabel("Corral");
 
-	const registerTool = (definition: unknown) => pi.registerTool(definition as never);
+	const spawnSchema = pi.zod.z.object({
+		name: pi.zod.z.string().optional(),
+		task: pi.zod.z.string().min(1),
+		base_branch: pi.zod.z.string().optional(),
+	});
+	const sendSchema = pi.zod.z.object({ name: pi.zod.z.string(), message: pi.zod.z.string().min(1) });
+	const waitSchema = pi.zod.z.object({ name: pi.zod.z.string().optional(), timeout_s: pi.zod.z.number().int().positive().optional() });
+	const readSchema = pi.zod.z.object({ name: pi.zod.z.string(), lines: pi.zod.z.number().int().positive().optional() });
+	const listSchema = pi.zod.z.object({});
+	const killSchema = pi.zod.z.object({ name: pi.zod.z.string(), remove_worktree: pi.zod.z.boolean().optional() });
 	pi.on("session_start", async (_event, ctx) => {
 		sessionCwd = ctx.cwd;
 		hands.clear();
@@ -173,16 +176,12 @@ export default function corralExtension(pi: ExtensionAPI) {
 		if (latest.length !== hands.size) persist(pi);
 	});
 
-	registerTool({
+	const spawnTool = {
 		name: "corral_spawn",
 		label: "Corral Spawn",
 		description: "Create a visible Codex hand in an isolated git worktree and give it a task.",
-		parameters: pi.zod.z.object({
-			name: pi.zod.z.string().optional(),
-			task: pi.zod.z.string().min(1),
-			base_branch: pi.zod.z.string().optional(),
-		}),
-		async execute(_id: string, params: SpawnParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: spawnSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd);
 			if (guard) return errorResult(guard);
 			const repoRoot = await repositoryRoot(ctx.cwd);
@@ -193,8 +192,9 @@ export default function corralExtension(pi: ExtensionAPI) {
 			const branch = `corral/${name}`;
 			const worktree = resolve(repoRoot, ".corral", "worktrees", name);
 			if (existsSync(worktree)) return errorResult(`worktree path already exists: ${worktree}`);
-			const args = ["worktree", "create", "--cwd", repoRoot, "--branch", branch, "--path", worktree, "--label", `corral:${name}`, "--no-focus", "--json"];
-			if (params.base_branch) args.splice(6, 0, "--base", params.base_branch);
+			const args = ["worktree", "create", "--cwd", repoRoot, "--branch", branch, "--path", worktree];
+			if (params.base_branch) args.push("--base", params.base_branch);
+			args.push("--label", `corral:${name}`, "--no-focus", "--json");
 			const created = await runHerdr(args, repoRoot);
 			if (created.exitCode !== 0) return errorResult(`could not create worktree: ${commandError(created, "herdr worktree create failed")}`);
 			const createdData = asRecord(parseJson(created.stdout));
@@ -228,14 +228,15 @@ export default function corralExtension(pi: ExtensionAPI) {
 			persist(pi);
 			return textResult(JSON.stringify({ name, pane_id: paneId, branch, worktree }, null, 2), { name, pane_id: paneId, branch, worktree });
 		},
-	});
+	} satisfies ToolDefinition<typeof spawnSchema, unknown>;
+	pi.registerTool<typeof spawnSchema, unknown>(spawnTool);
 
-	registerTool({
+	const sendTool = {
 		name: "corral_send",
 		label: "Corral Send",
 		description: "Wait for a corral hand to be ready, then send it another instruction.",
-		parameters: pi.zod.z.object({ name: pi.zod.z.string(), message: pi.zod.z.string().min(1) }),
-		async execute(_id: string, params: SendParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: sendSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd);
 			if (guard) return errorResult(guard);
 			const hand = hands.get(params.name);
@@ -246,14 +247,15 @@ export default function corralExtension(pi: ExtensionAPI) {
 			if (sent.exitCode !== 0) return errorResult(`could not send message: ${commandError(sent, "herdr pane run failed")}`);
 			return textResult(`Sent to ${hand.name}.`, { name: hand.name, pane_id: hand.paneId });
 		},
-	});
+	} satisfies ToolDefinition<typeof sendSchema, unknown>;
+	pi.registerTool<typeof sendSchema, unknown>(sendTool);
 
-	registerTool({
+	const waitTool = {
 		name: "corral_wait",
 		label: "Corral Wait",
 		description: "Wait for one hand, or all hands, to become idle or done.",
-		parameters: pi.zod.z.object({ name: pi.zod.z.string().optional(), timeout_s: pi.zod.z.number().int().positive().optional() }),
-		async execute(_id: string, params: WaitParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: waitSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd, false);
 			if (guard) return errorResult(guard);
 			const selected = params.name ? [hands.get(params.name)] : [...hands.values()];
@@ -262,14 +264,15 @@ export default function corralExtension(pi: ExtensionAPI) {
 			const results = await Promise.all(selected.map(async (hand) => ({ name: hand!.name, ...(await waitForCompletion(hand!.paneId, timeoutMs)) })));
 			return textResult(JSON.stringify(results, null, 2), results);
 		},
-	});
+	} satisfies ToolDefinition<typeof waitSchema, unknown>;
+	pi.registerTool<typeof waitSchema, unknown>(waitTool);
 
-	registerTool({
+	const readTool = {
 		name: "corral_read",
 		label: "Corral Read",
 		description: "Read recent visible terminal output from a corral hand.",
-		parameters: pi.zod.z.object({ name: pi.zod.z.string(), lines: pi.zod.z.number().int().positive().optional() }),
-		async execute(_id: string, params: ReadParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: readSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd, false);
 			if (guard) return errorResult(guard);
 			const hand = hands.get(params.name);
@@ -281,14 +284,15 @@ export default function corralExtension(pi: ExtensionAPI) {
 				return errorResult(error instanceof Error ? error.message : String(error));
 			}
 		},
-	});
+	} satisfies ToolDefinition<typeof readSchema, unknown>;
+	pi.registerTool<typeof readSchema, unknown>(readTool);
 
-	registerTool({
+	const listTool = {
 		name: "corral_list",
 		label: "Corral List",
 		description: "List corral hands and their current herdr agent status.",
-		parameters: pi.zod.z.object({}),
-		async execute(_id: string, _params: Record<string, never>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: listSchema,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd, false);
 			if (guard) return errorResult(guard);
 			const roster = await Promise.all([...hands.values()].map(async (hand) => {
@@ -297,14 +301,15 @@ export default function corralExtension(pi: ExtensionAPI) {
 			}));
 			return textResult(JSON.stringify(roster, null, 2), roster);
 		},
-	});
+	} satisfies ToolDefinition<typeof listSchema, unknown>;
+	pi.registerTool<typeof listSchema, unknown>(listTool);
 
-	registerTool({
+	const killTool = {
 		name: "corral_kill",
 		label: "Corral Kill",
 		description: "Close a corral hand pane and optionally remove its git worktree, preserving the branch.",
-		parameters: pi.zod.z.object({ name: pi.zod.z.string(), remove_worktree: pi.zod.z.boolean().optional() }),
-		async execute(_id: string, params: KillParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+		parameters: killSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const guard = await prerequisites(ctx.cwd, false);
 			if (guard) return errorResult(guard);
 			const hand = hands.get(params.name);
@@ -324,7 +329,8 @@ export default function corralExtension(pi: ExtensionAPI) {
 			persist(pi);
 			return textResult(`Killed ${hand.name}; branch ${hand.branch} was preserved.`, { ...hand, removed_worktree: Boolean(params.remove_worktree) });
 		},
-	});
+	} satisfies ToolDefinition<typeof killSchema, unknown>;
+	pi.registerTool<typeof killSchema, unknown>(killTool);
 
 	pi.registerCommand("corral", {
 		description: "Show corral hand roster and herdr pane ids",
