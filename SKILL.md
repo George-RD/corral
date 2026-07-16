@@ -19,12 +19,16 @@ If any check fails, stop and instruct user to install corral (from github.com/Ge
 1. Decompose the request into independent workstreams. Assign one hand per workstream. Give each hand a meaningful name (e.g. `api`, `ui`).
 2. Run `corral_spawn({ name, task })` for each hand.
    - The `task` must be self-contained, stating target files, context, constraints, and acceptance criteria. Codex hands do not see this foreman session.
+   - Pass `model` when a specific Codex model is required; do not drive `/model` through raw herdr input.
+   - To create a warm hand, omit `task`. Optional `bootstrap` checks (`codex_auth`, `git_auth`, and `tools`) are read-only readiness checks, not task dispatches or task completion.
 
 ## 3. Wait and Recovery
 Run `corral_wait({ name })` to monitor hands. If the wait state or roster is unclear, query statuses with `corral_list({})`. Handle outcomes:
-- **completed** (idle/done): Proceed to verification.
+- **completed** (idle/done with a dispatch id): Proceed to verification.
+- **ready with started:false/completed:false**: This is a warm hand with no tracked task. Send its first task with `corral_send`.
 - **blocked**: Run `corral_read({ name })` to get the question/prompt, then run `corral_send({ name, message })` with the answer/direction.
-- **started:false**: The hand timed out during start grace. Run `corral_read({ name })` first to check if the prompt landed in the terminal. Re-send using `corral_send({ name, message })` ONLY if the prompt did not land. If the prompt did land but status hasn't transitioned, do not re-send to avoid duplicating work.
+- **started:false / start-unknown**: Run `corral_read({ name })` first. If the prompt did not land and replay is safe, use `corral_send({ name, message, recovery: "retry" })`. If it did land, do not retry.
+- **Codex exited**: Inspect with `corral_read`, then use `corral_send({ name, message, recovery: "restart" })` only when relaunching and sending that message is intended.
 - **timedOut** (and started:true): The hand is still working. Re-run `corral_wait` or read progress with `corral_read`.
 
 ## 4. Verification and Feedback
