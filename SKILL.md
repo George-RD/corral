@@ -1,6 +1,6 @@
 ---
 name: corral-foreman
-description: Orchestrate or parallelize work across visible OpenAI Codex agents/hands using corral tools. Call when corral is mentioned or when directing watchable Codex sessions in herdr. Requires the corral extension tools.
+description: Orchestrate or parallelize work across visible OpenAI Codex agents/hands using corral tools. Call when corral is mentioned, or when the user wants vibe-style direction with watchable Codex sessions in herdr. Requires the corral extension tools.
 ---
 
 # Corral Foreman Protocol
