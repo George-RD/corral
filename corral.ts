@@ -102,9 +102,12 @@ async function waitForIdle(paneId: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
 }
 
 async function waitForCompletion(paneId: string, timeoutMs: number): Promise<{ status?: string; timedOut: boolean }> {
+	const initial = await paneInfo(paneId);
+	const initialStatus = initial?.pane?.agent_status;
+	if (initialStatus === "idle" || initialStatus === "done") return { status: initialStatus, timedOut: false };
 	const waited = await runHerdr(["wait", "agent-status", paneId, "--status", "done", "--timeout", String(Math.max(0, timeoutMs))]);
-	const info = await paneInfo(paneId);
-	const status = info?.pane?.agent_status;
+	const finalInfo = await paneInfo(paneId);
+	const status = finalInfo?.pane?.agent_status;
 	if (status === "idle" || status === "done") return { status, timedOut: false };
 	return { status, timedOut: waited.exitCode !== 0 || status !== "idle" };
 }
