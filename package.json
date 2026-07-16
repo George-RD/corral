@@ -1,0 +1,16 @@
+{
+	"name": "corral",
+	"version": "0.1.0",
+	"private": true,
+	"description": "OMP extension: orchestrate OpenAI Codex CLI agents as visible herdr panes in isolated git worktrees",
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"smoke": "bun run scripts/smoke.ts"
+	},
+	"devDependencies": {
+		"@oh-my-pi/pi-coding-agent": "17.0.1",
+		"typescript": "^5.7.0"
+	}
+}

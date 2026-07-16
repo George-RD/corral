@@ -1,0 +1,6 @@
+node_modules/
+.corral/
+*.log
+bun.lockb
+bun.lock
+.DS_Store
