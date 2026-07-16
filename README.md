@@ -23,6 +23,16 @@ From a clone of this repository:
 
 The installer creates a symlink, so edits to this checkout are immediately available after restarting OMP (or reloading extensions when supported).
 
+## Skill
+
+This repository includes an Oh My Pi agent skill that automatically teaches OMP the corral foreman protocol.
+
+Do not use `workflowz` or `vibe` modes to drive corral:
+- `workflowz` steers OMP to the built-in `task` tool (which spawns standard OMP subagents rather than Codex hands).
+- `vibe` mode strips custom extension tools (like the `corral_*` tools) from OMP's toolbelt.
+
+Instead, run OMP in its normal mode. When the skill is installed, the foreman protocol will guide OMP to coordinate Codex hands correctly.
+
 ## Requirements
 
 - OMP with extension support
